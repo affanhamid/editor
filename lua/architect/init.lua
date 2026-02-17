@@ -62,7 +62,7 @@ function M.connect_bridge(bridge, swarm, chat, dag, consultation)
       end
 
     elseif event.type == "agent_update" then
-      bridge.send({ type = "request_snapshot" })
+      swarm.update_single(event.data)
 
     elseif event.type == "new_message" then
       chat.append(event.data)
@@ -74,7 +74,7 @@ function M.connect_bridge(bridge, swarm, chat, dag, consultation)
       end
 
     elseif event.type == "task_update" then
-      bridge.send({ type = "request_snapshot" })
+      -- Use event data directly instead of requesting full snapshot
 
     elseif event.type == "consultation_request" then
       consultation.show(event.data, bridge)

@@ -35,10 +35,17 @@ type Message struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type Edge struct {
+	FromTask int    `json:"from_task"`
+	ToTask   int    `json:"to_task"`
+	EdgeType string `json:"edge_type"`
+}
+
 type Snapshot struct {
 	Agents   []Agent   `json:"agents"`
 	Tasks    []Task    `json:"tasks"`
 	Messages []Message `json:"messages"`
+	Edges    []Edge    `json:"edges"`
 }
 
 func GetSnapshot(ctx context.Context, db *pgxpool.Pool) (*Snapshot, error) {
@@ -84,6 +91,20 @@ func GetSnapshot(ctx context.Context, db *pgxpool.Pool) (*Snapshot, error) {
 			return nil, err
 		}
 		snapshot.Messages = append(snapshot.Messages, m)
+	}
+
+	// Get task edges
+	rows, err = db.Query(ctx, `SELECT from_task, to_task, edge_type FROM task_edges ORDER BY from_task, to_task`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e Edge
+		if err := rows.Scan(&e.FromTask, &e.ToTask, &e.EdgeType); err != nil {
+			return nil, err
+		}
+		snapshot.Edges = append(snapshot.Edges, e)
 	}
 
 	return snapshot, nil

@@ -110,5 +110,8 @@ func handleCommand(ctx context.Context, pool *pgxpool.Pool, cmd protocol.Command
 		if cmd.Conn != nil {
 			cmd.Conn.Send(protocol.Event{Type: "snapshot", Data: snapshot})
 		}
+
+	default:
+		log.Printf("unknown command type: %q", cmd.Type)
 	}
 }
