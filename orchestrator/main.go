@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/affanhamid/editor/orchestrator/internal/dag"
 	"github.com/affanhamid/editor/orchestrator/internal/db"
@@ -57,8 +56,8 @@ func main() {
 		}
 	}()
 
-	// Start heartbeat monitor.
-	go monitor.MonitorHeartbeats(ctx, pool, 2*time.Minute)
+	// Create agent registry for tracking live agent processes.
+	registry := spawn.NewAgentRegistry()
 
 	// Decompose prompt into DAG.
 	log.Printf("decomposing prompt: %q", *prompt)
@@ -99,14 +98,14 @@ func main() {
 	}
 	log.Printf("spawning %d initial sessions", len(ready))
 	for _, task := range ready {
-		if err := spawn.SpawnSession(ctx, pool, task, *projectDir, config); err != nil {
+		if _, err := spawn.SpawnSession(ctx, pool, registry, task, *projectDir, config); err != nil {
 			log.Printf("error spawning session for task %d: %v", task.ID, err)
 		}
 	}
 
 	// Process events until all tasks done or context cancelled.
 	log.Println("entering event loop...")
-	monitor.HandleEvents(ctx, pool, eventCh, *projectDir, config)
+	monitor.HandleEvents(ctx, pool, registry, eventCh, *projectDir, config)
 	log.Println("orchestrator shutdown complete")
 }
 

@@ -15,14 +15,20 @@ You are agent ` + "`{{.AgentID}}`" + ` working on task #{{.TaskID}}: "{{.TaskTit
 {{.TaskDescription}}
 
 ## Communication Protocol
-You have access to the ` + "`architect-pg`" + ` MCP server. Use it continuously:
+You have access to the ` + "`architect-pg`" + ` MCP server. Use it to communicate:
 
 1. **On start:** Call ` + "`read_context`" + ` for your domain. Call ` + "`read_messages`" + ` to see recent chat.
 2. **When you discover something:** Call ` + "`write_context`" + ` immediately.
 3. **When you make a decision:** Call ` + "`write_decision`" + ` with rationale.
 4. **When you're blocked:** Call ` + "`post_message`" + ` with channel='blockers' and msg_type='blocker'.
-5. **When you complete work:** Call ` + "`update_task`" + ` with status='completed' and a summary. Then call ` + "`post_message`" + ` on 'general' with msg_type='update'.
-6. **Periodically:** Call ` + "`heartbeat`" + ` so the orchestrator knows you're alive.
+   The orchestrator will respond to you directly in this conversation.
+5. **When you complete work:** Call ` + "`update_task`" + ` with status='completed' and a summary.
+6. **To coordinate with other agents:** Use ` + "`read_messages`" + ` and ` + "`check_decisions`" + `.
+
+## Important
+- The orchestrator communicates with you through this conversation. Watch for messages.
+- You do NOT need to call ` + "`heartbeat`" + `. The orchestrator tracks your liveness automatically.
+- Focus on your task. Commit frequently. Use mcp-pg for structured coordination.
 
 ## Before Making Architectural Decisions
 Always call ` + "`check_decisions`" + ` for the relevant domain first. If a conflicting decision exists,

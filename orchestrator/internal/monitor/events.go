@@ -26,7 +26,8 @@ type MessagePayload struct {
 }
 
 // HandleEvents is the main event processing loop.
-func HandleEvents(ctx context.Context, pool *pgxpool.Pool, eventCh <-chan db.Event, projectDir string, config spawn.Config) {
+func HandleEvents(ctx context.Context, pool *pgxpool.Pool, registry *spawn.AgentRegistry,
+	eventCh <-chan db.Event, projectDir string, config spawn.Config) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -50,7 +51,7 @@ func HandleEvents(ctx context.Context, pool *pgxpool.Pool, eventCh <-chan db.Eve
 						continue
 					}
 					for _, task := range ready {
-						if err := spawn.SpawnSession(ctx, pool, task, projectDir, config); err != nil {
+						if _, err := spawn.SpawnSession(ctx, pool, registry, task, projectDir, config); err != nil {
 							log.Printf("error spawning session for task %d: %v", task.ID, err)
 						}
 					}
@@ -64,7 +65,7 @@ func HandleEvents(ctx context.Context, pool *pgxpool.Pool, eventCh <-chan db.Eve
 				}
 				if payload.MsgType == "blocker" {
 					log.Printf("BLOCKER from agent %s (message %d)", payload.AgentID[:8], payload.ID)
-					HandleBlocker(ctx, pool, payload)
+					HandleBlocker(ctx, pool, registry, payload)
 				}
 
 			case "agent_updates":
