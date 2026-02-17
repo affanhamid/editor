@@ -36,9 +36,16 @@ func SpawnSession(ctx context.Context, pool *pgxpool.Pool, task dag.Task, projec
 		return fmt.Errorf("register agent: %w", err)
 	}
 
-	// 3. Assign the task
-	if err := db.UpdateTaskStatus(ctx, pool, task.ID, "in_progress", &agentID); err != nil {
-		return fmt.Errorf("assign task: %w", err)
+	// 3. Claim the task (atomic: fails if another agent claimed it first)
+	claimed, err := db.ClaimTask(ctx, pool, task.ID, "in_progress", agentID)
+	if err != nil {
+		return fmt.Errorf("claim task: %w", err)
+	}
+	if !claimed {
+		// Another agent already claimed this task; clean up worktree and skip.
+		_ = RemoveWorktree(projectDir, worktreePath)
+		log.Printf("task %d already claimed, skipping", task.ID)
+		return nil
 	}
 
 	// 4. Write CLAUDE.md into worktree

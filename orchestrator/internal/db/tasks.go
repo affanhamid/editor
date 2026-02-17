@@ -27,15 +27,21 @@ func InsertEdge(ctx context.Context, pool *pgxpool.Pool, fromTask, toTask int64)
 	return err
 }
 
-// UpdateTaskStatus updates the status of a task and optionally assigns it.
-func UpdateTaskStatus(ctx context.Context, pool *pgxpool.Pool, taskID int64, status string, assignedTo *string) error {
-	if assignedTo != nil {
-		_, err := pool.Exec(ctx,
-			`UPDATE tasks SET status = $1, assigned_to = $2 WHERE id = $3`,
-			status, *assignedTo, taskID,
-		)
-		return err
+// ClaimTask atomically assigns a task to an agent, returning false if already claimed.
+func ClaimTask(ctx context.Context, pool *pgxpool.Pool, taskID int64, status string, agentID string) (bool, error) {
+	tag, err := pool.Exec(ctx,
+		`UPDATE tasks SET status = $1, assigned_to = $2
+		 WHERE id = $3 AND assigned_to IS NULL`,
+		status, agentID, taskID,
+	)
+	if err != nil {
+		return false, err
 	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// UpdateTaskStatus updates the status of a task.
+func UpdateTaskStatus(ctx context.Context, pool *pgxpool.Pool, taskID int64, status string) error {
 	_, err := pool.Exec(ctx,
 		`UPDATE tasks SET status = $1 WHERE id = $2`,
 		status, taskID,

@@ -4,12 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 )
 
 // decompositionResponse is the expected JSON output from Claude Code.
 type decompositionResponse struct {
 	Tasks []Task `json:"tasks"`
 }
+
+// jsonBlockRe matches a JSON object in Claude's text output.
+var jsonBlockRe = regexp.MustCompile(`(?s)\{.*"tasks"\s*:\s*\[.*\]\s*\}`)
 
 // DecomposePrompt takes a user prompt and returns a structured DAG
 // by asking Claude Code to decompose it.
@@ -41,7 +45,6 @@ User request: %s`, prompt)
 
 	cmd := exec.Command("claude",
 		"--print",
-		"--output-format", "json",
 		"--project", projectDir,
 		"--prompt", plannerPrompt,
 	)
@@ -50,17 +53,14 @@ User request: %s`, prompt)
 		return nil, fmt.Errorf("claude decompose: %w", err)
 	}
 
-	// Claude --output-format json wraps the response; extract the text content.
-	var claudeResp struct {
-		Result string `json:"result"`
-	}
-	if err := json.Unmarshal(output, &claudeResp); err != nil {
-		// Fall back to treating the whole output as the JSON response.
-		claudeResp.Result = string(output)
+	// Extract JSON block from Claude's text output.
+	jsonBytes := jsonBlockRe.Find(output)
+	if jsonBytes == nil {
+		return nil, fmt.Errorf("no JSON block found in claude output: %s", output)
 	}
 
 	var resp decompositionResponse
-	if err := json.Unmarshal([]byte(claudeResp.Result), &resp); err != nil {
+	if err := json.Unmarshal(jsonBytes, &resp); err != nil {
 		return nil, fmt.Errorf("parse decomposition JSON: %w", err)
 	}
 
@@ -74,10 +74,7 @@ func buildDAG(tasks []Task) *DAG {
 		for _, dep := range t.BlockedBy {
 			d.Edges = append(d.Edges, Edge{From: dep, To: t.ID})
 		}
-		// Set initial status.
-		t.Status = "pending"
 	}
-	// Ensure all tasks start as pending.
 	for i := range d.Tasks {
 		d.Tasks[i].Status = "pending"
 	}
