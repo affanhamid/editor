@@ -32,6 +32,9 @@ func registerDecisionTools(s *server.MCPServer, cfg *Config) {
 			mcp.Enum("low", "medium", "high"),
 			mcp.DefaultString("low"),
 		),
+		mcp.WithString("git_sha",
+			mcp.Description("Git commit SHA associated with this decision"),
+		),
 	)
 
 	checkDecisions := mcp.NewTool("check_decisions",
@@ -58,7 +61,12 @@ func makeWriteDecisionHandler(cfg *Config) server.ToolHandlerFunc {
 			alternatives = &v
 		}
 
-		id, err := cfg.Queries.WriteDecision(ctx, cfg.AgentID, cfg.Branch, domain, decision, rationale, alternatives, riskLevel)
+		var gitSHA *string
+		if v := request.GetString("git_sha", ""); v != "" {
+			gitSHA = &v
+		}
+
+		id, err := cfg.Queries.WriteDecision(ctx, cfg.AgentID, cfg.Branch, domain, decision, rationale, alternatives, riskLevel, gitSHA)
 		if err != nil {
 			return errorResult(err), nil
 		}

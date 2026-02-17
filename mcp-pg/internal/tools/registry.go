@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"log"
 	"os"
 
 	"github.com/affanhamid/editor/mcp-pg/internal/db"
@@ -16,7 +17,7 @@ type Config struct {
 func NewConfig(q *db.Queries) *Config {
 	agentID := os.Getenv("ARCHITECT_AGENT_ID")
 	if agentID == "" {
-		agentID = "anonymous"
+		log.Fatal("ARCHITECT_AGENT_ID environment variable is required")
 	}
 	branch := os.Getenv("ARCHITECT_BRANCH")
 	return &Config{

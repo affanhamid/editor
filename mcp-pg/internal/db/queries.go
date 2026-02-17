@@ -257,13 +257,13 @@ func (q *Queries) UpdateTask(ctx context.Context, agentID string, taskID int64, 
 }
 
 // WriteDecision records an architectural decision.
-func (q *Queries) WriteDecision(ctx context.Context, agentID, branch, domain, decision, rationale string, alternatives *string, riskLevel string) (int64, error) {
+func (q *Queries) WriteDecision(ctx context.Context, agentID, branch, domain, decision, rationale string, alternatives *string, riskLevel string, gitSHA *string) (int64, error) {
 	var id int64
 	err := q.Pool.QueryRow(ctx,
-		`INSERT INTO decisions (agent_id, branch, domain, decision, rationale, alternatives_considered, risk_level)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO decisions (agent_id, branch, domain, decision, rationale, alternatives_considered, risk_level, git_sha)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING id`,
-		agentID, branch, domain, decision, rationale, alternatives, riskLevel,
+		agentID, branch, domain, decision, rationale, alternatives, riskLevel, gitSHA,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("write_decision: %w", err)
@@ -292,10 +292,12 @@ func (q *Queries) CheckDecisions(ctx context.Context, domain string) ([]Decision
 	})
 }
 
-// Heartbeat updates the agent's last heartbeat timestamp.
+// Heartbeat upserts the agent's last heartbeat timestamp.
 func (q *Queries) Heartbeat(ctx context.Context, agentID string) error {
 	_, err := q.Pool.Exec(ctx,
-		`UPDATE agents SET last_heartbeat = NOW() WHERE agent_id = $1`,
+		`INSERT INTO agents (agent_id, pid, status, last_heartbeat)
+		 VALUES ($1, 0, 'working', NOW())
+		 ON CONFLICT (agent_id) DO UPDATE SET last_heartbeat = NOW()`,
 		agentID,
 	)
 	if err != nil {
