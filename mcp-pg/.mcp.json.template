@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "architect-pg": {
+      "command": "{mcp_pg_binary}",
+      "env": {
+        "ARCHITECT_AGENT_ID": "{agent_id}",
+        "ARCHITECT_BRANCH": "{branch_name}",
+        "ARCHITECT_DB_URL": "postgres://architect:architect_local@localhost:5432/architect?sslmode=disable"
+      }
+    }
+  }
+}
