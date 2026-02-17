@@ -13,17 +13,16 @@ import (
 
 // TaskUpdatePayload is the JSON payload from task_updates notifications.
 type TaskUpdatePayload struct {
-	TaskID int64  `json:"task_id"`
+	ID     int64  `json:"id"`
 	Status string `json:"status"`
-	Title  string `json:"title"`
 }
 
 // MessagePayload is the JSON payload from agent_messages notifications.
 type MessagePayload struct {
+	ID      int64  `json:"id"`
 	AgentID string `json:"agent_id"`
 	Channel string `json:"channel"`
 	MsgType string `json:"msg_type"`
-	Body    string `json:"body"`
 }
 
 // HandleEvents is the main event processing loop.
@@ -44,7 +43,7 @@ func HandleEvents(ctx context.Context, pool *pgxpool.Pool, eventCh <-chan db.Eve
 					continue
 				}
 				if payload.Status == "completed" {
-					log.Printf("task %d completed: %s", payload.TaskID, payload.Title)
+					log.Printf("task %d completed", payload.ID)
 					ready, err := dag.ReadyTasks(ctx, pool)
 					if err != nil {
 						log.Printf("error finding ready tasks: %v", err)
@@ -64,7 +63,7 @@ func HandleEvents(ctx context.Context, pool *pgxpool.Pool, eventCh <-chan db.Eve
 					continue
 				}
 				if payload.MsgType == "blocker" {
-					log.Printf("BLOCKER from agent %s: %s", payload.AgentID[:8], payload.Body)
+					log.Printf("BLOCKER from agent %s (message %d)", payload.AgentID[:8], payload.ID)
 					HandleBlocker(ctx, pool, payload)
 				}
 

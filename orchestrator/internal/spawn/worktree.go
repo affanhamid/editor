@@ -11,7 +11,7 @@ func CreateWorktree(projectDir string, agentID string, taskID int64) (string, st
 	branchName := fmt.Sprintf("agent/%s/task-%d", agentID[:8], taskID)
 	worktreePath := filepath.Join(projectDir, ".worktrees", fmt.Sprintf("agent-%s", agentID[:8]))
 
-	cmd := exec.Command("git", "worktree", "add", worktreePath, "-b", branchName)
+	cmd := exec.Command("git", "worktree", "add", worktreePath, "-b", branchName, "main")
 	cmd.Dir = projectDir
 	if err := cmd.Run(); err != nil {
 		return "", "", fmt.Errorf("git worktree add: %w", err)

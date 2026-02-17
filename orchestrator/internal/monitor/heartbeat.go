@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -19,7 +20,7 @@ func MonitorHeartbeats(ctx context.Context, pool *pgxpool.Pool, timeout time.Dur
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			dead, err := db.MarkDeadAgents(ctx, pool, timeout.String())
+			dead, err := db.MarkDeadAgents(ctx, pool, fmt.Sprintf("%d seconds", int(timeout.Seconds())))
 			if err != nil {
 				log.Printf("error checking heartbeats: %v", err)
 				continue
