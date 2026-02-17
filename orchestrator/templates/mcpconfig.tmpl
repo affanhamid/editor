@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "architect-pg": {
+      "command": "{{.MCPPgBinary}}",
+      "env": {
+        "ARCHITECT_AGENT_ID": "{{.AgentID}}",
+        "ARCHITECT_BRANCH": "{{.BranchName}}",
+        "ARCHITECT_DB_URL": "{{.DBURL}}"
+      }
+    }
+  }
+}
