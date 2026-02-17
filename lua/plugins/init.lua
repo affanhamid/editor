@@ -17,6 +17,7 @@ require("lazy").setup({
   { import = "plugins.git" },
   { import = "plugins.lsp" },
   { import = "plugins.claude" },
+  { import = "plugins.architect" },
 }, {
   install = { colorscheme = { "habamax" } },
   checker = { enabled = true, notify = false },
