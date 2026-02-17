@@ -41,8 +41,13 @@ func SpawnSession(ctx context.Context, pool *pgxpool.Pool, registry *AgentRegist
 
 	agentID := uuid.New().String()
 
-	// 1. Create git worktree
-	worktreePath, branchName, err := CreateWorktree(projectDir, agentID, task.ID)
+	// 1. Find parent branches and create git worktree
+	parentWorktrees, err := db.ParentBranches(ctx, pool, task.ID)
+	if err != nil {
+		log.Printf("warning: failed to get parent branches for task %d: %v", task.ID, err)
+	}
+
+	worktreePath, branchName, err := CreateWorktree(projectDir, agentID, task.ID, parentWorktrees)
 	if err != nil {
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
@@ -81,12 +86,20 @@ func SpawnSession(ctx context.Context, pool *pgxpool.Pool, registry *AgentRegist
 		return "", fmt.Errorf("write .mcp.json: %w", err)
 	}
 
-	// 6. Spawn Claude Code in interactive mode with scoped permissions
+	// 6. Spawn Claude Code in streaming print mode with scoped permissions.
+	// --print: non-interactive (no TUI), supports piped stdin/stdout
+	// --input-format stream-json: accept NDJSON user messages on stdin
+	// --output-format stream-json: emit NDJSON events on stdout
+	// --allowedTools: scoped permissions (no --dangerously-skip-permissions)
 	cmd := exec.CommandContext(ctx, "claude",
+		"--print",
+		"--verbose",
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
 		"--allowedTools", "Edit,Write,Read,Glob,Grep,Bash,mcp__architect-pg__*",
 	)
 	cmd.Dir = worktreePath
-	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
+	cmd.Env = append(filterEnv(os.Environ(), "CLAUDECODE"), "ZDOTDIR=/dev/null")
 
 	// Hold stdin pipe for sending messages to the agent
 	stdinPipe, err := cmd.StdinPipe()
@@ -115,10 +128,10 @@ func SpawnSession(ctx context.Context, pool *pgxpool.Pool, registry *AgentRegist
 	// 8. Register in the agent registry
 	registry.Register(agentID, stdinPipe, cmd.Process.Pid)
 
-	// 9. Send initial prompt via stdin
-	initialPrompt := fmt.Sprintf("You are working on task #%d: %q\n\n%s\n",
+	// 9. Send initial prompt via stdin as stream-json user message
+	initialPrompt := fmt.Sprintf("You are working on task #%d: %q\n\n%s",
 		task.ID, task.Title, task.Description)
-	if _, err := stdinPipe.Write([]byte(initialPrompt)); err != nil {
+	if err := registry.Send(agentID, initialPrompt); err != nil {
 		log.Printf("warning: failed to write initial prompt to agent %s: %v", agentID[:8], err)
 	}
 

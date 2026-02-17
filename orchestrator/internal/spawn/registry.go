@@ -1,6 +1,7 @@
 package spawn
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"sync"
@@ -37,7 +38,18 @@ func (r *AgentRegistry) Deregister(agentID string) {
 	delete(r.agents, agentID)
 }
 
-// Send writes a message to an agent's stdin pipe.
+// streamMessage is the NDJSON format expected by claude --input-format stream-json.
+type streamMessage struct {
+	Type    string        `json:"type"`
+	Message streamContent `json:"message"`
+}
+
+type streamContent struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// Send writes a message to an agent's stdin pipe as a stream-json user message.
 func (r *AgentRegistry) Send(agentID string, message string) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -45,7 +57,19 @@ func (r *AgentRegistry) Send(agentID string, message string) error {
 	if !ok {
 		return fmt.Errorf("agent %s not found in registry", agentID)
 	}
-	_, err := io.WriteString(handle.Stdin, message+"\n")
+	msg := streamMessage{
+		Type: "user",
+		Message: streamContent{
+			Role:    "user",
+			Content: message,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal stream message: %w", err)
+	}
+	data = append(data, '\n')
+	_, err = handle.Stdin.Write(data)
 	return err
 }
 

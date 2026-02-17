@@ -1,16 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/term"
 )
 
 // ── DB types ────────────────────────────────────────────────────────────────
@@ -38,13 +42,6 @@ type Agent struct {
 	LastHeartbeat time.Time
 }
 
-type Message struct {
-	AgentID   string
-	Channel   string
-	MsgType   string
-	Content   string
-	CreatedAt time.Time
-}
 
 type ContextEntry struct {
 	AgentID    string
@@ -78,9 +75,13 @@ type ContentBlock struct {
 	Input json.RawMessage `json:"input,omitempty"`
 }
 
-type ToolResultMessage struct {
-	Content interface{} `json:"content"`
-}
+
+// ── View state ──────────────────────────────────────────────────────────────
+
+const (
+	viewMain  = 0
+	viewAgent = 1
+)
 
 // ── Status icons ────────────────────────────────────────────────────────────
 
@@ -99,17 +100,27 @@ func statusIcon(s string) string {
 	}
 }
 
+// ── Buffered rendering helpers ──────────────────────────────────────────────
+
+func bprintf(buf *bytes.Buffer, format string, args ...any) {
+	fmt.Fprintf(buf, format, args...)
+}
+
+func bprintln(buf *bytes.Buffer, s string) {
+	buf.WriteString(s)
+	buf.WriteByte('\n')
+}
+
 // ── DAG rendering ───────────────────────────────────────────────────────────
 
-func renderDAG(tasks []Task, edges []TaskEdge) {
-	fmt.Println("\n─── DAG ───────────────────────────────────────")
+func renderDAG(buf *bytes.Buffer, tasks []Task, edges []TaskEdge) {
+	bprintln(buf, "\n─── DAG ───────────────────────────────────────")
 
 	taskMap := make(map[int64]Task)
 	for _, t := range tasks {
 		taskMap[t.ID] = t
 	}
 
-	// Build children map (from_task blocks to_task, so from_task -> to_task is the edge direction)
 	children := make(map[int64][]int64)
 	hasParent := make(map[int64]bool)
 	for _, e := range edges {
@@ -117,7 +128,6 @@ func renderDAG(tasks []Task, edges []TaskEdge) {
 		hasParent[e.ToTask] = true
 	}
 
-	// Find roots (tasks with no incoming edges)
 	var roots []int64
 	for _, t := range tasks {
 		if !hasParent[t.ID] {
@@ -125,13 +135,17 @@ func renderDAG(tasks []Task, edges []TaskEdge) {
 		}
 	}
 
-	// If no edges, just list all tasks
 	if len(edges) == 0 {
 		for _, t := range tasks {
-			fmt.Printf("  [%s] #%d %s\n", statusIcon(t.Status), t.ID, t.Title)
+			bprintf(buf, "  [%s] #%d %s\n", statusIcon(t.Status), t.ID, t.Title)
+		}
+		if len(tasks) == 0 {
+			bprintln(buf, "  (no tasks)")
 		}
 		return
 	}
+
+	visited := make(map[int64]bool)
 
 	var printTree func(id int64, prefix string, isLast bool)
 	printTree = func(id int64, prefix string, isLast bool) {
@@ -145,10 +159,15 @@ func renderDAG(tasks []Task, edges []TaskEdge) {
 			connector = "├──▶ "
 		}
 		if prefix == "" {
-			fmt.Printf("  [%s] #%d %s\n", statusIcon(t.Status), t.ID, t.Title)
+			bprintf(buf, "  [%s] #%d %s\n", statusIcon(t.Status), t.ID, t.Title)
 		} else {
-			fmt.Printf("  %s%s[%s] #%d %s\n", prefix, connector, statusIcon(t.Status), t.ID, t.Title)
+			bprintf(buf, "  %s%s[%s] #%d %s\n", prefix, connector, statusIcon(t.Status), t.ID, t.Title)
 		}
+
+		if visited[id] {
+			return
+		}
+		visited[id] = true
 
 		kids := children[id]
 		childPrefix := prefix
@@ -170,21 +189,21 @@ func renderDAG(tasks []Task, edges []TaskEdge) {
 	}
 
 	if len(tasks) == 0 {
-		fmt.Println("  (no tasks)")
+		bprintln(buf, "  (no tasks)")
 	}
 }
 
 // ── Agents rendering ────────────────────────────────────────────────────────
 
-func renderAgents(agents []Agent, taskMap map[int64]Task) {
-	fmt.Println("\n─── AGENTS ────────────────────────────────────")
+func renderAgents(buf *bytes.Buffer, agents []Agent, taskMap map[int64]Task) {
+	bprintln(buf, "\n─── AGENTS ────────────────────────────────────")
 
 	if len(agents) == 0 {
-		fmt.Println("  (no agents)")
+		bprintln(buf, "  (no agents)")
 		return
 	}
 
-	for _, a := range agents {
+	for i, a := range agents {
 		shortID := a.AgentID
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
@@ -213,40 +232,22 @@ func renderAgents(agents []Agent, taskMap map[int64]Task) {
 			}
 		}
 
-		fmt.Printf("  %-10s %-9s %-45s %s\n", shortID, a.Status, taskInfo, dur)
-	}
-}
-
-// ── Messages rendering ──────────────────────────────────────────────────────
-
-func renderMessages(messages []Message) {
-	fmt.Println("\n─── MESSAGES (recent) ─────────────────────────")
-
-	if len(messages) == 0 {
-		fmt.Println("  (no messages)")
-		return
-	}
-
-	for _, m := range messages {
-		shortID := m.AgentID
-		if len(shortID) > 8 {
-			shortID = shortID[:8]
+		num := i + 1
+		if num <= 9 {
+			bprintf(buf, "  [%d] %-10s %-9s %-45s %s\n", num, shortID, a.Status, taskInfo, dur)
+		} else {
+			bprintf(buf, "      %-10s %-9s %-45s %s\n", shortID, a.Status, taskInfo, dur)
 		}
-		content := m.Content
-		if len(content) > 80 {
-			content = content[:77] + "..."
-		}
-		fmt.Printf("  [%s] %s: %s\n", shortID, m.MsgType, content)
 	}
 }
 
 // ── Context rendering ───────────────────────────────────────────────────────
 
-func renderContext(entries []ContextEntry) {
-	fmt.Println("\n─── CONTEXT ───────────────────────────────────")
+func renderContext(buf *bytes.Buffer, entries []ContextEntry) {
+	bprintln(buf, "\n─── CONTEXT ───────────────────────────────────")
 
 	if len(entries) == 0 {
-		fmt.Println("  (no context)")
+		bprintln(buf, "  (no context)")
 		return
 	}
 
@@ -259,23 +260,40 @@ func renderContext(entries []ContextEntry) {
 		if len(value) > 50 {
 			value = value[:47] + "..."
 		}
-		fmt.Printf("  %s/%s  →  %s  (by %s, confidence: %.1f)\n",
+		bprintf(buf, "  %s/%s  →  %s  (by %s, confidence: %.1f)\n",
 			c.Domain, c.KeyName, value, shortID, c.Confidence)
 	}
 }
 
 // ── Agent conversation rendering ────────────────────────────────────────────
 
-func renderConversation(agentID string, logPath string) {
-	shortID := agentID
+func renderConversation(buf *bytes.Buffer, agent Agent, taskMap map[int64]Task, logPath string) {
+	shortID := agent.AgentID
 	if len(shortID) > 8 {
 		shortID = shortID[:8]
 	}
-	fmt.Printf("\n─── AGENT CONVERSATION: %s ──────────\n", shortID)
+
+	taskInfo := ""
+	if agent.CurrentTaskID != nil {
+		if t, ok := taskMap[*agent.CurrentTaskID]; ok {
+			taskInfo = fmt.Sprintf(" | task #%d %q", *agent.CurrentTaskID, t.Title)
+		} else {
+			taskInfo = fmt.Sprintf(" | task #%d", *agent.CurrentTaskID)
+		}
+	}
+
+	bprintf(buf, "\n─── AGENT %s%s | %s ───\n", shortID, taskInfo, agent.Status)
+
+	if logPath == "" {
+		bprintln(buf, "  (no log file found)")
+		bprintln(buf, "\nPress [b] back, [q] quit")
+		return
+	}
 
 	data, err := os.ReadFile(logPath)
 	if err != nil {
-		fmt.Printf("  (cannot read log: %v)\n", err)
+		bprintf(buf, "  (cannot read log: %v)\n", err)
+		bprintln(buf, "\nPress [b] back, [q] quit")
 		return
 	}
 
@@ -307,14 +325,14 @@ func renderConversation(agentID string, logPath string) {
 						text = text[:97] + "..."
 					}
 					if text != "" {
-						fmt.Printf("  🤖 %s\n", text)
+						bprintf(buf, "  🤖 %s\n", text)
 					}
 				case "tool_use":
 					input := summarizeInput(block.Input)
 					if input != "" {
-						fmt.Printf("  🔧 %s → %s\n", block.Name, input)
+						bprintf(buf, "  🔧 %s → %s\n", block.Name, input)
 					} else {
-						fmt.Printf("  🔧 %s\n", block.Name)
+						bprintf(buf, "  🔧 %s\n", block.Name)
 					}
 				}
 			}
@@ -323,8 +341,7 @@ func renderConversation(agentID string, logPath string) {
 			if ll.Message == nil {
 				continue
 			}
-			// Tool results - show brief summary
-			var raw map[string]interface{}
+			var raw map[string]any
 			if err := json.Unmarshal(ll.Message, &raw); err != nil {
 				continue
 			}
@@ -332,28 +349,27 @@ func renderConversation(agentID string, logPath string) {
 			if !ok {
 				continue
 			}
-			// Could be string or array
 			switch v := contentRaw.(type) {
 			case string:
 				result := v
 				if len(result) > 80 {
 					result = result[:77] + "..."
 				}
-				fmt.Printf("  📎 %s\n", result)
-			case []interface{}:
+				bprintf(buf, "  📎 %s\n", result)
+			case []any:
 				for _, item := range v {
-					if m, ok := item.(map[string]interface{}); ok {
+					if m, ok := item.(map[string]any); ok {
 						if text, ok := m["text"].(string); ok {
 							if len(text) > 80 {
 								text = text[:77] + "..."
 							}
-							fmt.Printf("  📎 %s\n", text)
+							bprintf(buf, "  📎 %s\n", text)
 						}
 						if content, ok := m["content"].(string); ok {
 							if len(content) > 80 {
 								content = content[:77] + "..."
 							}
-							fmt.Printf("  📎 %s\n", content)
+							bprintf(buf, "  📎 %s\n", content)
 						}
 					}
 				}
@@ -361,21 +377,22 @@ func renderConversation(agentID string, logPath string) {
 
 		case "result":
 			dur := ll.DurationMs / 1000.0
-			fmt.Printf("  ⏱  %.1fs | $%.2f | %d turns\n", dur, ll.TotalCostUSD, ll.NumTurns)
+			bprintf(buf, "  ⏱  %.1fs | $%.2f | %d turns\n", dur, ll.TotalCostUSD, ll.NumTurns)
 		}
 	}
+
+	bprintln(buf, "\nPress [b] back, [q] quit")
 }
 
 func summarizeInput(raw json.RawMessage) string {
 	if raw == nil {
 		return ""
 	}
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return ""
 	}
 
-	// Show key fields depending on tool
 	if cmd, ok := m["command"].(string); ok {
 		if len(cmd) > 60 {
 			cmd = cmd[:57] + "..."
@@ -394,7 +411,6 @@ func summarizeInput(raw json.RawMessage) string {
 	if p, ok := m["pattern"].(string); ok {
 		return p
 	}
-	// For MCP tools, show first string value
 	for _, v := range m {
 		if s, ok := v.(string); ok {
 			if len(s) > 60 {
@@ -409,13 +425,19 @@ func summarizeInput(raw json.RawMessage) string {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 func main() {
-	dbFlag := flag.String("db", "postgres://localhost:5432/architect?sslmode=disable", "Postgres connection string")
+	dbFlag := flag.String("db", "postgres://localhost:5432/architect_meta?sslmode=disable", "Postgres connection string")
 	projectFlag := flag.String("project", ".", "Project directory (to find .worktrees/)")
-	agentFlag := flag.String("agent", "", "Show full conversation for specific agent ID (prefix match)")
 	flag.Parse()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cancel()
+	}()
 
 	pool, err := pgxpool.New(ctx, *dbFlag)
 	if err != nil {
@@ -429,18 +451,81 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ── Header ──────────────────────────────────────────────────────────
-	fmt.Println("╔══════════════════════════════════════════╗")
-	fmt.Println("║          ARCHITECT DASHBOARD             ║")
-	fmt.Println("╚══════════════════════════════════════════╝")
-
-	// ── Query all data ──────────────────────────────────────────────────
-
-	// Tasks
-	tasks, err := queryTasks(ctx, pool)
+	// Enter raw terminal mode
+	fd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(fd)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error querying tasks: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error entering raw mode: %v\n", err)
 		os.Exit(1)
+	}
+	defer term.Restore(fd, oldState)
+
+	// Read keypresses in a goroutine
+	keys := make(chan byte, 16)
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil || n == 0 {
+				return
+			}
+			keys <- buf[0]
+		}
+	}()
+
+	currentView := viewMain
+	selectedAgent := 0
+	var agents []Agent // cache for agent selection
+
+	// Initial render
+	agents = renderScreen(ctx, pool, *projectFlag, currentView, selectedAgent, agents)
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case key := <-keys:
+			switch {
+			case key == 'q' || key == 3: // q or Ctrl-C
+				return
+			case key == 'b' && currentView == viewAgent:
+				currentView = viewMain
+				selectedAgent = 0
+				agents = renderScreen(ctx, pool, *projectFlag, currentView, selectedAgent, agents)
+			case key >= '1' && key <= '9' && currentView == viewMain:
+				idx := int(key - '1')
+				if idx < len(agents) {
+					selectedAgent = idx
+					currentView = viewAgent
+					agents = renderScreen(ctx, pool, *projectFlag, currentView, selectedAgent, agents)
+				}
+			}
+		case <-ticker.C:
+			agents = renderScreen(ctx, pool, *projectFlag, currentView, selectedAgent, agents)
+		}
+	}
+}
+
+func renderScreen(ctx context.Context, pool *pgxpool.Pool, projectDir string, currentView int, selectedAgent int, prevAgents []Agent) []Agent {
+	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	var buf bytes.Buffer
+	buf.WriteString("\033[2J\033[H")
+
+	flush := func(agents []Agent) []Agent {
+		out := bytes.ReplaceAll(buf.Bytes(), []byte("\n"), []byte("\r\n"))
+		os.Stdout.Write(out)
+		return agents
+	}
+
+	tasks, err := queryTasks(queryCtx, pool)
+	if err != nil {
+		bprintf(&buf, "error querying tasks: %v\n", err)
+		return flush(prevAgents)
 	}
 
 	taskMap := make(map[int64]Task)
@@ -448,62 +533,50 @@ func main() {
 		taskMap[t.ID] = t
 	}
 
-	// Edges
-	edges, err := queryEdges(ctx, pool)
+	edges, err := queryEdges(queryCtx, pool)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error querying edges: %v\n", err)
-		os.Exit(1)
+		bprintf(&buf, "error querying edges: %v\n", err)
+		return flush(prevAgents)
 	}
 
-	// Agents
-	agents, err := queryAgents(ctx, pool)
+	agents, err := queryAgents(queryCtx, pool)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error querying agents: %v\n", err)
-		os.Exit(1)
+		bprintf(&buf, "error querying agents: %v\n", err)
+		return flush(prevAgents)
 	}
 
-	// Messages
-	messages, err := queryMessages(ctx, pool)
+	ctxEntries, err := queryContext(queryCtx, pool)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error querying messages: %v\n", err)
-		os.Exit(1)
+		bprintf(&buf, "error querying context: %v\n", err)
+		return flush(prevAgents)
 	}
 
-	// Context
-	ctxEntries, err := queryContext(ctx, pool)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error querying context: %v\n", err)
-		os.Exit(1)
-	}
+	worktreeBase := filepath.Join(projectDir, ".worktrees")
 
-	// ── Render sections ─────────────────────────────────────────────────
-	renderDAG(tasks, edges)
-	renderAgents(agents, taskMap)
-	renderMessages(messages)
-	renderContext(ctxEntries)
+	switch currentView {
+	case viewMain:
+		bprintln(&buf, "╔══════════════════════════════════════════╗")
+		bprintln(&buf, "║          ARCHITECT DASHBOARD             ║")
+		bprintln(&buf, "╚══════════════════════════════════════════╝")
 
-	// ── Agent conversations ─────────────────────────────────────────────
-	worktreeBase := filepath.Join(*projectFlag, ".worktrees")
+		renderDAG(&buf, tasks, edges)
+		renderAgents(&buf, agents, taskMap)
+		renderContext(&buf, ctxEntries)
 
-	if *agentFlag != "" {
-		// Show specific agent conversation
-		logPath := findAgentLog(worktreeBase, *agentFlag)
-		if logPath == "" {
-			fmt.Fprintf(os.Stderr, "\nNo log found for agent %q in %s\n", *agentFlag, worktreeBase)
-			os.Exit(1)
-		}
-		renderConversation(*agentFlag, logPath)
-	} else {
-		// Show summary for all agents
-		for _, a := range agents {
+		bprintln(&buf, "\nPress [1-9] to view agent, [q] to quit")
+
+	case viewAgent:
+		if selectedAgent < len(agents) {
+			a := agents[selectedAgent]
 			logPath := findAgentLog(worktreeBase, a.AgentID)
-			if logPath != "" {
-				renderConversation(a.AgentID, logPath)
-			}
+			renderConversation(&buf, a, taskMap, logPath)
+		} else {
+			bprintln(&buf, "  (agent not found)")
+			bprintln(&buf, "\nPress [b] back, [q] quit")
 		}
 	}
 
-	fmt.Println()
+	return flush(agents)
 }
 
 // ── DB queries ──────────────────────────────────────────────────────────────
@@ -566,25 +639,6 @@ func queryAgents(ctx context.Context, pool *pgxpool.Pool) ([]Agent, error) {
 	return agents, rows.Err()
 }
 
-func queryMessages(ctx context.Context, pool *pgxpool.Pool) ([]Message, error) {
-	rows, err := pool.Query(ctx,
-		`SELECT agent_id, channel, msg_type, content, created_at
-		 FROM messages ORDER BY created_at DESC LIMIT 10`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var messages []Message
-	for rows.Next() {
-		var m Message
-		if err := rows.Scan(&m.AgentID, &m.Channel, &m.MsgType, &m.Content, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		messages = append(messages, m)
-	}
-	return messages, rows.Err()
-}
 
 func queryContext(ctx context.Context, pool *pgxpool.Pool) ([]ContextEntry, error) {
 	rows, err := pool.Query(ctx,
@@ -609,13 +663,11 @@ func queryContext(ctx context.Context, pool *pgxpool.Pool) ([]ContextEntry, erro
 // ── Log file helpers ────────────────────────────────────────────────────────
 
 func findAgentLog(worktreeBase string, agentID string) string {
-	// Try exact match first
 	logPath := filepath.Join(worktreeBase, "agent-"+agentID, "agent.log")
 	if _, err := os.Stat(logPath); err == nil {
 		return logPath
 	}
 
-	// Try prefix match
 	entries, err := os.ReadDir(worktreeBase)
 	if err != nil {
 		return ""

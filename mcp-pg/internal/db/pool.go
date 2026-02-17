@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const defaultConnStr = "postgres://architect:architect_local@localhost:5432/architect?sslmode=disable"
+const defaultConnStr = "postgres://architect:architect_local@localhost:5432/architect_meta?sslmode=disable"
 
 func NewPool(ctx context.Context) (*pgxpool.Pool, error) {
 	connStr := os.Getenv("ARCHITECT_DB_URL")

@@ -49,6 +49,46 @@ func UpdateTaskStatus(ctx context.Context, pool *pgxpool.Pool, taskID int64, sta
 	return err
 }
 
+// CompleteTask marks a task as completed by its assigned agent.
+func CompleteTask(ctx context.Context, pool *pgxpool.Pool, taskID int64, agentID string) error {
+	_, err := pool.Exec(ctx,
+		`UPDATE tasks SET status = 'completed', updated_at = NOW()
+		 WHERE id = $1 AND assigned_to = $2`,
+		taskID, agentID,
+	)
+	return err
+}
+
+// ParentBranches returns the worktree_path values of agents that completed
+// the direct dependencies (blocking tasks) of the given task.
+func ParentBranches(ctx context.Context, pool *pgxpool.Pool, taskID int64) ([]string, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT DISTINCT a.worktree_path
+		 FROM task_edges e
+		 JOIN tasks t ON e.from_task = t.id
+		 JOIN agents a ON t.assigned_to = a.agent_id
+		 WHERE e.to_task = $1
+		   AND e.edge_type = 'blocks'
+		   AND t.status = 'completed'
+		   AND a.worktree_path IS NOT NULL`,
+		taskID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		paths = append(paths, p)
+	}
+	return paths, rows.Err()
+}
+
 // ReclaimTask resets a task to pending and clears its assignment.
 func ReclaimTask(ctx context.Context, pool *pgxpool.Pool, taskID int64) error {
 	_, err := pool.Exec(ctx,

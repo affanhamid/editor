@@ -3,7 +3,7 @@ set -e
 
 cd "$(dirname "$0")"
 
-DB_NAME="${ARCHITECT_DB:-architect}"
+DB_NAME="${ARCHITECT_DB:-architect_meta}"
 DB_USER="${ARCHITECT_USER:-architect}"
 
 echo "Seeding database '$DB_NAME'..."

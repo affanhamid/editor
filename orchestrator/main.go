@@ -17,13 +17,23 @@ import (
 
 func main() {
 	projectDir := flag.String("project", ".", "Path to the git repository")
-	dbURL := flag.String("db", "postgres://architect:architect_local@localhost:5432/architect?sslmode=disable", "PostgreSQL connection string")
-	mcpBinary := flag.String("mcp-pg", "./mcp-pg/mcp-pg", "Path to the mcp-pg binary")
+	dbURL := flag.String("db", "postgres://architect:architect_local@localhost:5432/architect_meta?sslmode=disable", "PostgreSQL connection string")
+	mcpBinary := flag.String("mcp-pg", "", "Path to the mcp-pg binary (auto-detected if empty)")
 	prompt := flag.String("prompt", "", "The user prompt to decompose and execute")
+	promptFile := flag.String("prompt-file", "", "Path to a file containing the prompt (alternative to --prompt)")
 	flag.Parse()
 
-	if *prompt == "" {
-		fmt.Fprintln(os.Stderr, "error: --prompt is required")
+	// Resolve prompt from --prompt or --prompt-file.
+	promptText := *prompt
+	if promptText == "" && *promptFile != "" {
+		data, err := os.ReadFile(*promptFile)
+		if err != nil {
+			log.Fatalf("failed to read prompt file: %v", err)
+		}
+		promptText = string(data)
+	}
+	if promptText == "" {
+		fmt.Fprintln(os.Stderr, "error: --prompt or --prompt-file is required")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -40,12 +50,22 @@ func main() {
 		cancel()
 	}()
 
+	// Auto-create database and run migrations.
+	if err := db.EnsureDatabase(*dbURL); err != nil {
+		log.Fatalf("failed to ensure database: %v", err)
+	}
+
 	// Connect to Postgres.
 	pool, err := db.NewPool(ctx, *dbURL)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
 	defer pool.Close()
+
+	// Run migrations.
+	if err := db.RunMigrations(ctx, pool); err != nil {
+		log.Fatalf("failed to run migrations: %v", err)
+	}
 
 	// Start LISTEN/NOTIFY listener.
 	eventCh := make(chan db.Event, 100)
@@ -60,8 +80,8 @@ func main() {
 	registry := spawn.NewAgentRegistry()
 
 	// Decompose prompt into DAG.
-	log.Printf("decomposing prompt: %q", *prompt)
-	taskDAG, err := dag.DecomposePrompt(*prompt, *projectDir)
+	log.Printf("decomposing prompt (%d chars)", len(promptText))
+	taskDAG, err := dag.DecomposePrompt(promptText, *projectDir)
 	if err != nil {
 		log.Fatalf("failed to decompose prompt: %v", err)
 	}
@@ -86,9 +106,13 @@ func main() {
 	// Read main CLAUDE.md if it exists.
 	mainClaudeMD := readMainClaudeMD(*projectDir)
 
+	// Resolve the mcp-pg binary path.
+	resolvedMCPBinary := spawn.ResolveMCPPgBinary(*mcpBinary)
+	log.Printf("using mcp-pg binary: %s", resolvedMCPBinary)
+
 	// Spawn sessions for immediately-ready tasks.
 	config := spawn.Config{
-		MCPPgBinary:  *mcpBinary,
+		MCPPgBinary:  resolvedMCPBinary,
 		DBURL:        *dbURL,
 		MainClaudeMD: mainClaudeMD,
 	}

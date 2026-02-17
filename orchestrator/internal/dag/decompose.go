@@ -3,9 +3,23 @@ package dag
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 )
+
+// filterEnv returns a copy of env with the named variable removed.
+func filterEnv(env []string, name string) []string {
+	prefix := name + "="
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
 
 // decompositionResponse is the expected JSON output from Claude Code.
 type decompositionResponse struct {
@@ -43,14 +57,14 @@ Rules:
 
 User request: %s`, prompt)
 
-	cmd := exec.Command("claude",
-		"--print",
-		"--project", projectDir,
-		"--prompt", plannerPrompt,
-	)
+	cmd := exec.Command("claude", "--print", plannerPrompt)
+	cmd.Dir = projectDir
+	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("claude decompose: %w", err)
+		return nil, fmt.Errorf("claude decompose: %w\nstderr: %s", err, stderr.String())
 	}
 
 	// Extract JSON block from Claude's text output.
