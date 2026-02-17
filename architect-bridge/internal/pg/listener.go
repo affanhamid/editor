@@ -3,7 +3,9 @@ package pg
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"time"
 
 	"architect-bridge/internal/protocol"
 
@@ -14,16 +16,32 @@ import (
 var channels = []string{"agent_messages", "context_updates", "task_updates", "agent_updates"}
 
 func StartListener(ctx context.Context, dbURL string, eventCh chan<- protocol.Event) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		err := listenLoop(ctx, dbURL, eventCh)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("listener: connection lost: %v, reconnecting in 2s...", err)
+			time.Sleep(2 * time.Second)
+		}
+	}
+}
+
+func listenLoop(ctx context.Context, dbURL string, eventCh chan<- protocol.Event) error {
 	conn, err := pgx.Connect(ctx, dbURL)
 	if err != nil {
-		log.Fatalf("listener: failed to connect: %v", err)
+		return fmt.Errorf("failed to connect: %w", err)
 	}
 	defer conn.Close(ctx)
 
 	for _, ch := range channels {
 		_, err := conn.Exec(ctx, "LISTEN "+ch)
 		if err != nil {
-			log.Fatalf("listener: failed to listen on %s: %v", ch, err)
+			return fmt.Errorf("failed to listen on %s: %w", ch, err)
 		}
 	}
 
@@ -33,10 +51,9 @@ func StartListener(ctx context.Context, dbURL string, eventCh chan<- protocol.Ev
 		notification, err := conn.WaitForNotification(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
-			log.Printf("listener: error waiting for notification: %v", err)
-			return
+			return fmt.Errorf("notification error: %w", err)
 		}
 		event := notificationToEvent(notification)
 		eventCh <- event

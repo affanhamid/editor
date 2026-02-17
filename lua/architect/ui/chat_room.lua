@@ -19,6 +19,9 @@ function M.create()
 end
 
 function M.append(message)
+  if #M.messages > 200 then
+    table.remove(M.messages, 1)
+  end
   table.insert(M.messages, message)
   M.render()
 end
